@@ -1,0 +1,20 @@
+# An example: docker compose up -d, then open http://localhost:8000 and type the key.
+services:
+  image-tagger:
+    image: ghcr.io/xcfa/image-tagger:latest
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Required, at least 16 characters: every call but /health and the page asks for it (Authorization: Bearer).
+      TAGGER_API_KEY: ${TAGGER_API_KEY:?set TAGGER_API_KEY in .env}
+      # Hugging Face: public models download without it (anonymously, slower to be rate-limited); gated ones need it.
+      HF_TOKEN: ${HF_TOKEN:-}
+      # Models, the first answers POST /tag, the others POST /tag/<name>; each one is ~0.5–1.5 GB of memory.
+      TAGGER_MODELS: SmilingWolf/wd-swinv2-tagger-v3
+      # TAGGER_MODELS: swinv2=SmilingWolf/wd-swinv2-tagger-v3 eva02=SmilingWolf/wd-eva02-large-tagger-v3
+      # TAGGER_UPDATE: "true"   # ask the hub at every start whether the models changed
+    volumes:
+      # Downloaded models and the page's settings: kept when the container is recreated.
+      - ./models:/models

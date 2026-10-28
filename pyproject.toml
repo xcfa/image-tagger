@@ -1,0 +1,23 @@
+[project]
+name = "image-tagger"
+version = "1.0.0"
+description = "Waifu Diffusion image tagger behind HTTP: models from Hugging Face, Shizuka's tagger protocol, a small page"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "S", "BLE", "A"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "N802"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tagger", "conftest"]
