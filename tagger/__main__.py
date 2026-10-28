@@ -39,11 +39,16 @@ def main() -> int:
     for spec in settings.models:
         try:
             folder = downloader.ensure(spec, update=settings.update)
-            tagger = Tagger.load(folder, settings.threads)
         except DownloadError as error:
             state.failed(str(error))
             log(str(error))
             return 1
+        except OSError as error:  # most often a mounted folder the service's user (uid 1000) cannot write
+            state.failed(f"{spec.name}: cannot write to {settings.models_dir}: {error}")
+            log(state.error or "")
+            return 1
+        try:
+            tagger = Tagger.load(folder, settings.threads)
         except Exception as error:  # noqa: BLE001 — onnxruntime or the CSV: say which model and why
             state.failed(f"{spec.name}: cannot load the model: {error}")
             log(state.error or "")

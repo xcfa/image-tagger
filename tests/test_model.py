@@ -55,3 +55,16 @@ def test_only_pictures_of_the_four_formats_are_read():
     with pytest.raises(ImageError):
         decode(buffer.getvalue())
     assert decode(png((1, 2, 3))).size == (16, 10)
+
+
+def test_a_long_strip_is_scaled_before_it_is_padded(tagger):
+    import resource
+
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    batch = tagger.prepare(Image.new("RGB", (40000, 2), (255, 0, 0)))
+    grown_mb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024
+
+    assert batch.shape == (1, 8, 8, 3)
+    assert batch[0, 3, 4].tolist() == [0.0, 0.0, 255.0]  # the strip: one row, in the middle
+    assert batch[0, 0, 4].tolist() == [255.0, 255.0, 255.0]
+    assert grown_mb < 200  # a 40000-pixel white square first would be 4.8 GB

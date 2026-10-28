@@ -59,15 +59,19 @@ class Tagger:
         return cls(session, read_tags(os.path.join(folder, "selected_tags.csv")))
 
     def prepare(self, image: Image.Image) -> np.ndarray:
-        """What the models were trained on: the picture on a white square, `size` pixels, BGR, 0..255 floats."""
+        """What the models were trained on: the picture on a white square, `size` pixels, BGR, 0..255 floats.
+
+        Scaled first and padded after, not the other way: a long strip (a webtoon page, 800x30000) padded to its own
+        square first would take gigabytes before the resize."""
         image = image.convert("RGBA")
         canvas = Image.new("RGBA", image.size, (255, 255, 255, 255))
         canvas.alpha_composite(image)
         image = canvas.convert("RGB")
-        side = max(image.size)
-        square = Image.new("RGB", (side, side), (255, 255, 255))
-        square.paste(image, ((side - image.width) // 2, (side - image.height) // 2))
-        square = square.resize((self.size, self.size), Image.BICUBIC)
+        scale = self.size / max(image.size)
+        fitted = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        image = image.resize(fitted, Image.BICUBIC)
+        square = Image.new("RGB", (self.size, self.size), (255, 255, 255))
+        square.paste(image, ((self.size - image.width) // 2, (self.size - image.height) // 2))
         array = np.asarray(square, dtype=np.float32)[:, :, ::-1]
         return np.ascontiguousarray(array)[np.newaxis, ...]
 

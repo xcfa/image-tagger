@@ -93,3 +93,13 @@ def test_no_key_no_start(tmp_path):
     result = subprocess.run([sys.executable, "-m", "tagger"], cwd=root, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 2
     assert "TAGGER_API_KEY is required" in result.stdout
+
+
+def test_a_models_folder_it_cannot_write_says_so(hub, tmp_path, model_bytes):
+    hub.add_model("SmilingWolf/wd-test-tagger-v3", model_bytes)
+    blocked = tmp_path / "models"
+    blocked.write_text("a file where the folder should be")
+    process = start(hub, blocked, free_port())
+    out, _ = process.communicate(timeout=30)
+    assert process.returncode == 1
+    assert f"cannot write to {blocked}" in out

@@ -3,8 +3,9 @@
 A model is `model.onnx` and `selected_tags.csv` of a repository (`resolve/<revision>/<file>`, the way the hub serves
 them). They are written next to a `.part` file and renamed when whole and checked: a large (LFS) file against the
 sha256 the hub names in `X-Linked-Etag`, a small one against its git blob hash (`ETag`). A folder that already holds
-both files is used as is, so a mounted volume survives the container; `update` asks the hub whether they changed.
-The token goes only to the hub itself: a redirect to the file storage (another host) is followed without it.
+both files is used as is, so a mounted volume survives the container; `update` asks the hub whether they changed and
+swaps the changed files only when all of them came whole (else the copy stays). The token goes only to the hub itself:
+a redirect to the file storage (another host, or plain http) is followed without it.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from .config import ModelSpec
 FILES = ("model.onnx", "selected_tags.csv")
 MARKER = ".source.json"
 ATTEMPTS = 3
+REDIRECTS = 5
 CHUNK = 1024 * 1024
 
 Log = Callable[[str], None]
@@ -43,6 +45,8 @@ class Remote:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """HEAD answers are read hop by hop: the hub's own redirect carries the file's hash."""
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 (urllib's signature)
         return None
 
@@ -52,7 +56,7 @@ class _StripAuthOnHostChange(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+        if new is not None and not _same_origin(req.full_url, newurl):
             new.remove_header("Authorization")
         return new
 
@@ -76,26 +80,37 @@ class Downloader:
         os.makedirs(folder, exist_ok=True)
         source = self._read_marker(folder)
         same_source = source.get("repo") == model.repo_id and source.get("revision") == model.revision
-        have = same_source and all(os.path.isfile(os.path.join(folder, name)) for name in FILES)
+        etags = dict(source.get("etags") or {}) if same_source else {}
+        # A file counts once the marker names it: one left by a broken earlier start is not half of a pair.
+        have = all(name in etags and os.path.isfile(os.path.join(folder, name)) for name in FILES)
         if have and not update:
             self._log(f"{model.name}: {model.repo_id}@{model.revision} is in {folder}")
             return folder
 
-        etags = dict(source.get("etags") or {}) if same_source else {}
-        for name in FILES:
-            path = os.path.join(folder, name)
-            try:
+        staged: list[tuple[str, str]] = []  # (name, etag) waiting in <name>.part for the other file
+        try:
+            for name in FILES:
+                path = os.path.join(folder, name)
                 remote = self._remote(model, name)
-            except DownloadError:
-                if have:  # updating, and the hub cannot be reached: what is there still works
-                    self._log(f"{model.name}: cannot ask the hub about {name}, keeping the copy in {folder}")
+                if os.path.isfile(path) and remote.etag and etags.get(name) == remote.etag:
                     continue
+                self._fetch(model, name, path + ".part", remote)
+                if have:  # updating: the old pair works until the new one is whole
+                    staged.append((name, remote.etag or ""))
+                else:  # nothing usable yet: keep what came, a restart need not fetch it again
+                    os.replace(path + ".part", path)
+                    etags[name] = remote.etag or ""
+                    self._write_marker(folder, {"repo": model.repo_id, "revision": model.revision, "etags": etags})
+        except DownloadError as error:
+            for name, _ in staged:
+                _remove(os.path.join(folder, name + ".part"))
+            if not have:
                 raise
-            if os.path.isfile(path) and remote.etag and etags.get(name) == remote.etag:
-                continue
-            self._fetch(model, name, path, remote)
-            etags[name] = remote.etag
-            self._write_marker(folder, {"repo": model.repo_id, "revision": model.revision, "etags": etags})
+            self._log(f"{error} Keeping the copy in {folder}.")
+            return folder
+        for name, etag in staged:
+            os.replace(os.path.join(folder, name + ".part"), os.path.join(folder, name))
+            etags[name] = etag
         self._write_marker(folder, {"repo": model.repo_id, "revision": model.revision, "etags": etags})
         return folder
 
@@ -114,18 +129,27 @@ class Downloader:
         return request
 
     def _remote(self, model: ModelSpec, name: str) -> Remote:
-        """HEAD without following the redirect: the hub's own answer names the file's hash and size."""
+        """HEAD, following the hub's redirects within its own host (a renamed repository, a small file's cache) but
+        not to the storage: the hub's own answer names the file's hash and size."""
         url = self._url(model, name)
-        try:
-            response = self._head.open(self._request(url, "HEAD"), timeout=self._timeout)
-            headers = response.headers
-            response.close()
-        except urllib.error.HTTPError as error:
-            if error.code not in (301, 302, 303, 307, 308):
-                raise DownloadError(self._explain(model, name, error.code)) from error
-            headers = error.headers
-        except (urllib.error.URLError, OSError) as error:
-            raise DownloadError(f"{model.name}: cannot reach {self._endpoint}: {getattr(error, 'reason', error)}") from error
+        for _ in range(REDIRECTS + 1):
+            try:
+                response = self._head.open(self._request(url, "HEAD"), timeout=self._timeout)
+                headers = response.headers
+                response.close()
+            except urllib.error.HTTPError as error:
+                if error.code not in (301, 302, 303, 307, 308):
+                    raise DownloadError(self._explain(model, name, error.code)) from error
+                headers = error.headers
+            except (urllib.error.URLError, OSError) as error:
+                raise DownloadError(f"{model.name}: cannot reach {self._endpoint}: {getattr(error, 'reason', error)}") from error
+            location = headers.get("Location")
+            if not location or headers.get("X-Linked-Etag"):
+                break
+            target = urllib.parse.urljoin(url, location)
+            if not _same_origin(url, target):
+                break
+            url = target
         etag = headers.get("X-Linked-Etag") or headers.get("ETag")
         size = headers.get("X-Linked-Size") or (headers.get("Content-Length") if not headers.get("Location") else None)
         etag = etag.strip().removeprefix("W/").strip('"') if etag else None
@@ -141,12 +165,11 @@ class Downloader:
             return f"{model.name}: {where} does not exist (404): check TAGGER_MODELS."
         return f"{model.name}: the hub answered {status} for {where}."
 
-    def _fetch(self, model: ModelSpec, name: str, path: str, remote: Remote) -> None:
-        part = path + ".part"
+    def _fetch(self, model: ModelSpec, name: str, part: str, remote: Remote) -> None:
+        """The file into `part`, whole and checked, or DownloadError (and no `part`)."""
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 self._download(model, name, part, remote)
-                os.replace(part, path)
                 return
             except DownloadError:
                 _remove(part)
@@ -218,6 +241,11 @@ def _remove(path: str) -> None:
         os.remove(path)
     except FileNotFoundError:
         pass
+
+
+def _same_origin(a: str, b: str) -> bool:
+    first, second = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
+    return (first.scheme, first.netloc) == (second.scheme, second.netloc)
 
 
 def _int(value: str | None) -> int | None:

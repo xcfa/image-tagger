@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from urllib.parse import quote
 
 DEFAULT_OWNER = "SmilingWolf"
 DEFAULT_MODELS = "SmilingWolf/wd-swinv2-tagger-v3"
@@ -31,8 +32,11 @@ class ModelSpec:
 
     @property
     def folder(self) -> str:
-        """Where it lives under the models folder: `owner/repo` (the revision is checked by a marker inside)."""
-        return self.repo_id
+        """Where it lives under the models folder: `owner/repo`, `owner/repo@revision` for a revision other than main
+        (two revisions of one repository must not take turns overwriting one folder)."""
+        if self.revision == "main":
+            return self.repo_id
+        return f"{self.repo_id}@{quote(self.revision, safe='')}"
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,8 @@ from .preferences import Preferences
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_BYTES = 20 * 1024 * 1024
 MAX_JSON = 16 * 1024
+# A refused body up to this size is read before the answer, so the client gets the status rather than a reset.
+DRAIN_LIMIT = 4 * MAX_BYTES
 PAGE = resources.files("tagger").joinpath("static/index.html").read_bytes()
 
 
@@ -65,6 +67,7 @@ def make_handler(settings: Settings, state: State, preferences: Preferences) -> 
         timeout = 60
         server_version = "image-tagger/1"
         sys_version = ""
+        _consumed = False  # the request's body was read (one request per connection: HTTP/1.0)
 
         def log_message(self, format: str, *args) -> None:  # noqa: A002 — http.server's name
             pass  # no line per request; failures are printed where they happen
@@ -72,6 +75,7 @@ def make_handler(settings: Settings, state: State, preferences: Preferences) -> 
         # ── answers ──────────────────────────────────────────────────────
 
         def _send(self, status: int, data: bytes, content_type: str) -> None:
+            self._drain()
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
@@ -83,6 +87,25 @@ def make_handler(settings: Settings, state: State, preferences: Preferences) -> 
 
         def _answer(self, status: int, body: dict) -> None:
             self._send(status, json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+        def _drain(self) -> None:
+            """Reads a body nobody wanted: closing on unread bytes makes the kernel reset the connection, and the
+            client sees a broken pipe instead of 401/404/413/415."""
+            if self._consumed or self.command not in ("POST", "PUT"):
+                return
+            self._consumed = True
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+            except ValueError:
+                return
+            if not 0 < length <= DRAIN_LIMIT:
+                return
+            self.connection.settimeout(10)
+            try:
+                while length > 0 and (chunk := self.rfile.read(min(length, 1024 * 1024))):
+                    length -= len(chunk)
+            except OSError:
+                pass
 
         def _authorized(self) -> bool:
             if hmac.compare_digest(self.headers.get("Authorization", "").encode("utf-8"), expected):
@@ -107,6 +130,7 @@ def make_handler(settings: Settings, state: State, preferences: Preferences) -> 
                 self._answer(413, {"error": f"The body is larger than {limit // (1024 * 1024) or 1} MB."})
                 return None
             data = self.rfile.read(length)
+            self._consumed = True
             if len(data) != length:
                 self._answer(400, {"error": "The body was cut off."})
                 return None
@@ -147,6 +171,9 @@ def make_handler(settings: Settings, state: State, preferences: Preferences) -> 
                 return self._answer(200, preferences.update(changes))
             except ValueError as error:
                 return self._answer(400, {"error": str(error) if not isinstance(error, json.JSONDecodeError) else "Not JSON."})
+            except OSError as error:  # the models folder is not writable: say so rather than drop the connection
+                print(f"settings: {error}", flush=True)
+                return self._answer(500, {"error": f"Cannot save the settings: {error.strerror or error}."})
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._authorized():

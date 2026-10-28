@@ -1,7 +1,10 @@
+import http.client
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -141,3 +144,24 @@ def test_the_thresholds_are_saved_and_used(app, tmp_path):
 
     for bad in [b"[1]", b"not json", b'{"threshold": 2}', b'{"threshold": true}', b'{"color": 1}']:
         assert app.call("PUT", "/settings", bad, {"Content-Type": "application/json"})[0] == 400
+
+
+@pytest.mark.parametrize(
+    "path, size, key, status",
+    [("/tag", 8 << 20, "wrong-key-0123456789", 401), ("/tag/clip", 8 << 20, KEY, 404), ("/tag", 25 << 20, KEY, 413)],
+)
+def test_a_large_refused_body_still_gets_its_status(app, path, size, key, status):
+    # Answering before reading the body and closing would reset the connection: the client sees a broken pipe.
+    address = urlsplit(app.url)
+    connection = http.client.HTTPConnection(address.hostname, address.port, timeout=30)
+    headers = {**IMAGE, "Authorization": f"Bearer {key}", "Content-Length": str(size)}
+    connection.request("POST", path, body=b"\0" * size, headers=headers)
+    assert connection.getresponse().status == status
+    connection.close()
+
+
+def test_settings_that_cannot_be_written_are_a_500_not_a_dropped_connection(app, tmp_path):
+    os.mkdir(tmp_path / "settings.json.part")  # open() of it fails, as on a folder the service cannot write
+    status, body = app.json("PUT", "/settings", b'{"threshold": 0.4}', {"Content-Type": "application/json"})
+    assert status == 500
+    assert "Cannot save" in body["error"]

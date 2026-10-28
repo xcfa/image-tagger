@@ -67,6 +67,8 @@ class FakeHub:
         self.files: dict[str, bytes] = {}
         self.requests: list[tuple[str, str, str, str | None]] = []  # (host, method, path, authorization)
         self.status: dict[str, int] = {}  # path → status to answer instead
+        self.fail_get: set[str] = set()  # paths whose HEAD answers but whose GET is 404
+        self.moved: dict[str, str] = {}  # path → another path on the hub: 307, relative, no ETag (a renamed repo)
         self.corrupt = False
         hub = self
 
@@ -82,6 +84,10 @@ class FakeHub:
                     if hub.corrupt:
                         data = data[:-1] + bytes([data[-1] ^ 1])
                     return self._send(200, data, {}, head)
+                if self.path in hub.moved:
+                    return self._send(307, b"", {"Location": hub.moved[self.path]}, head)
+                if not head and self.path in hub.fail_get:
+                    return self._send(404, b"gone", {}, head)
                 if self.path in hub.status:
                     return self._send(hub.status[self.path], b'{"error":"no"}', {}, head)
                 data = hub.files.get(self.path)
