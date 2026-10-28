@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image tagger</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1d2129; --muted: #667085; --line: #dfe3ea;
+    --accent: #3b6ef5; --accent-text: #fff; --bar: #d8e2fd; --err-bg: #fdecec; --err: #b42318; --ok: #157f3b;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b; --panel: #1c1f26; --text: #e6e8ee; --muted: #9aa3b2; --line: #2e333d;
+      --accent: #6b8ffa; --accent-text: #0e1116; --bar: #2b3a63; --err-bg: #3a1d1d; --err: #ff8a80; --ok: #6fd498;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 16px; }
+  h1 { margin: 0; font-size: 20px; }
+  h2 { margin: 0 0 10px; font-size: 15px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+  input, select, button { font: inherit; color: var(--text); }
+  input[type=password], input[type=number], select {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+  }
+  button { padding: 7px 14px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent);
+           color: var(--accent-text); cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  .row > label { flex: 1 1 180px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .status { font-size: 12px; color: var(--muted); }
+  .status.ok { color: var(--ok); }
+  .error { background: var(--err-bg); color: var(--err); padding: 8px 10px; border-radius: 6px; margin-top: 10px; }
+  .work { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 760px) { .work { grid-template-columns: 1fr; } }
+  .drop { display: grid; place-items: center; min-height: 220px; border: 2px dashed var(--line); border-radius: 8px;
+          color: var(--muted); text-align: center; padding: 12px; cursor: pointer; }
+  .drop.over { border-color: var(--accent); }
+  .drop img { max-width: 100%; max-height: 480px; border-radius: 4px; }
+  .group { margin-bottom: 12px; }
+  .group h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+  .tag { position: relative; display: flex; justify-content: space-between; gap: 8px; padding: 3px 8px;
+         border-radius: 4px; overflow: hidden; font-family: ui-monospace, monospace; font-size: 13px; }
+  .tag::before { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--w); background: var(--bar); z-index: 0; }
+  .tag span { position: relative; z-index: 1; overflow-wrap: anywhere; }
+  .tag .score { color: var(--muted); flex: none; }
+  .copy { margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Image tagger</h1>
+
+  <section>
+    <h2>Доступ</h2>
+    <div class="row">
+      <label>Ключ API (TAGGER_API_KEY)
+        <input id="key" type="password" autocomplete="off" placeholder="Bearer-ключ сервиса">
+      </label>
+      <button id="connect">Подключиться</button>
+    </div>
+    <p class="hint">Ключ хранится только в этом браузере.</p>
+    <div id="access-status" class="status"></div>
+  </section>
+
+  <section>
+    <h2>Настройки</h2>
+    <div class="row">
+      <label>Модель
+        <select id="model" disabled></select>
+      </label>
+      <label>Минимальная уверенность тега
+        <input id="threshold" type="number" min="0.01" max="1" step="0.01" disabled>
+      </label>
+      <label>Минимальная уверенность персонажа
+        <input id="character" type="number" min="0.01" max="1" step="0.01" disabled>
+      </label>
+      <button id="save" class="secondary" disabled>Сохранить</button>
+    </div>
+    <p class="hint">Пороги сохраняются на сервере и действуют для всех запросов, если клиент не передал свои
+      (X-Threshold, X-Character-Threshold).</p>
+    <div id="settings-status" class="status"></div>
+  </section>
+
+  <div class="work">
+    <section>
+      <h2>Картинка</h2>
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="Выбрать картинку">
+        <span>Перетащите картинку сюда или нажмите, чтобы выбрать (JPEG, PNG, WebP, GIF до 20 МБ)</span>
+      </div>
+      <input id="file" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+    </section>
+    <section>
+      <h2>Теги</h2>
+      <div id="result" class="status">Здесь появятся теги.</div>
+    </section>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+  };
+  let file = null;
+
+  $("key").value = store.get("tagger.key") || "";
+
+  async function call(method, path, body, headers = {}) {
+    const response = await fetch(path, {
+      method,
+      headers: { Authorization: `Bearer ${$("key").value.trim()}`, ...headers },
+      body,
+    });
+    let data = null;
+    try { data = await response.json(); } catch { /* not JSON */ }
+    if (!response.ok) throw new Error((data && data.error) || `HTTP ${response.status}`);
+    return data;
+  }
+
+  function status(id, text, ok = false) {
+    const el = $(id);
+    el.textContent = text;
+    el.className = ok ? "status ok" : "status";
+  }
+
+  async function connect() {
+    store.set("tagger.key", $("key").value.trim());
+    status("access-status", "Подключение…");
+    try {
+      const [{ models }, settings] = await Promise.all([call("GET", "/models"), call("GET", "/settings")]);
+      const select = $("model");
+      select.replaceChildren(...models.map((m) => {
+        const option = document.createElement("option");
+        option.value = m.name;
+        option.textContent = `${m.name} — ${m.repo}${m.ready ? "" : " (загружается)"}`;
+        if (m.name === store.get("tagger.model")) option.selected = true;
+        return option;
+      }));
+      $("threshold").value = settings.threshold;
+      $("character").value = settings.characterThreshold;
+      for (const id of ["model", "threshold", "character", "save"]) $(id).disabled = false;
+      status("access-status", models.every((m) => m.ready) ? "Подключено, модели готовы." : "Подключено, модели ещё загружаются.", true);
+      if (file) run();
+    } catch (error) {
+      status("access-status", `Не удалось: ${error.message}`);
+    }
+  }
+
+  async function save() {
+    const body = JSON.stringify({ threshold: Number($("threshold").value), characterThreshold: Number($("character").value) });
+    try {
+      await call("PUT", "/settings", body, { "Content-Type": "application/json" });
+      status("settings-status", "Сохранено.", true);
+      if (file) run();
+    } catch (error) {
+      status("settings-status", `Не сохранено: ${error.message}`);
+    }
+  }
+
+  function pick(chosen) {
+    if (!chosen) return;
+    file = chosen;
+    const img = document.createElement("img");
+    img.alt = chosen.name;
+    img.src = URL.createObjectURL(chosen);
+    $("drop").replaceChildren(img);
+    run();
+  }
+
+  async function run() {
+    const result = $("result");
+    if ($("model").disabled) { result.textContent = "Сначала подключитесь с ключом."; return; }
+    result.textContent = "Распознаю…";
+    try {
+      const model = $("model").value;
+      store.set("tagger.model", model);
+      const data = await call("POST", `/tag/${encodeURIComponent(model)}`, file, {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Threshold": $("threshold").value,
+        "X-Character-Threshold": $("character").value,
+      });
+      show(data);
+    } catch (error) {
+      const box = document.createElement("div");
+      box.className = "error";
+      box.textContent = error.message;
+      result.replaceChildren(box);
+    }
+  }
+
+  function show(data) {
+    const groups = [["rating", "Рейтинг"], ["character", "Персонажи"], ["general", "Теги"]];
+    const nodes = [];
+    for (const [category, title] of groups) {
+      const tags = data.tags.filter((t) => t.category === category);
+      if (!tags.length) continue;
+      const group = document.createElement("div");
+      group.className = "group";
+      const h = document.createElement("h3");
+      h.textContent = `${title} (${tags.length})`;
+      group.append(h);
+      for (const t of tags) {
+        const row = document.createElement("div");
+        row.className = "tag";
+        row.style.setProperty("--w", `${Math.round(t.score * 100)}%`);
+        const name = document.createElement("span");
+        name.textContent = t.name;
+        const score = document.createElement("span");
+        score.className = "score";
+        score.textContent = t.score.toFixed(3);
+        row.append(name, score);
+        group.append(row);
+      }
+      nodes.push(group);
+    }
+    const copy = document.createElement("button");
+    copy.className = "secondary copy";
+    copy.textContent = "Копировать теги";
+    copy.onclick = () => navigator.clipboard?.writeText(
+      data.tags.filter((t) => t.category !== "rating").map((t) => t.name).join(", "));
+    nodes.push(copy);
+    $("result").replaceChildren(...nodes);
+  }
+
+  $("connect").onclick = connect;
+  $("key").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
+  $("save").onclick = save;
+  $("model").onchange = () => { if (file) run(); };
+  const drop = $("drop");
+  drop.onclick = () => $("file").click();
+  drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
+  $("file").onchange = (e) => pick(e.target.files[0]);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); pick(e.dataTransfer.files[0]); };
+  document.addEventListener("paste", (e) => pick([...e.clipboardData.files].find((f) => f.type.startsWith("image/"))));
+
+  if ($("key").value) connect();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+*
+!requirements.txt
+!tagger/
+**/__pycache__
