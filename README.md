@@ -148,5 +148,5 @@ ruff check . && ruff format --check . && python -m pytest -q
 - `tests/test_main.py` запускает `python -m tagger` целиком.
 
 CI (`.github/workflows/ci.yml`) запускает ruff и тесты, а в PR ещё собирает образ. Публикация (`publish.yml`)
-выкладывает образ для amd64 и arm64 в `ghcr.io/xcfa/image-tagger`: с master — тег `latest`, с git-тега `v1.2.3` —
+выкладывает образ для amd64 в `ghcr.io/xcfa/image-tagger`: с master — тег `latest`, с git-тега `v1.2.3` —
 `1.2.3`, `1.2` и `1`.
