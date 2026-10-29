@@ -1,7 +1,7 @@
 name: Publish
 
-# The image to ghcr.io/<owner>/image-tagger for linux/amd64 and linux/arm64: every master push → latest and
-# sha-<commit>; a tag v1.2.3 → 1.2.3, 1.2, 1.
+# The image to ghcr.io/<owner>/image-tagger for linux/amd64: every master push → latest and sha-<commit>; a tag
+# v1.2.3 → 1.2.3, 1.2, 1. No arm64: it meant QEMU on the amd64 runner, the slowest part of the run.
 on:
   push:
     branches: [master]
@@ -19,7 +19,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - id: meta
         uses: docker/metadata-action@v5
@@ -39,7 +38,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
